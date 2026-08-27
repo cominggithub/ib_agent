@@ -533,6 +533,16 @@ def report_login(settings: Settings, args: argparse.Namespace, result: login.Log
         print(f"  api port listening : {payload['listening']}")
         print(f"  ibc process alive  : {payload['process_running']}")
         print(f"  codes submitted    : {result.attempts}")
+    if result.reason in login.PENDING_REASONS and payload["process_running"]:
+        # Never let this be a silent surprise: IBC keeps retrying the login for
+        # as long as the process lives, and IBKR eventually refuses the
+        # credentials outright. Three days of that cost a locked username once.
+        print(
+            "\nThe Gateway is still running and will keep retrying this login.\n"
+            "Send a code soon with 'ib-agent gateway code <CODE>', or stop it with\n"
+            "'ib-agent gateway down' - do not leave it waiting for hours.",
+            file=sys.stderr,
+        )
     if result.ok:
         return EXIT_OK
     # All three mean the same thing to a caller: a human has to produce a code.

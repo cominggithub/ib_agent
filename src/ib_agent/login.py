@@ -38,7 +38,7 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
@@ -319,6 +319,25 @@ class LoginResult:
     reason: str
     attempts: int
     detail: str = ""
+    gateway_stopped: bool = False
+
+
+# Outcomes after which a Gateway we started ourselves must not be left running.
+# IBC retries a failed login for as long as it lives: on 2026-08-24 a Gateway
+# launched on the 21st and left waiting for a code that never came reached 536
+# login attempts over three days, was throttled 267 times with escalating
+# backoff, and ended on "Unrecognized Username or Password" - IBKR had stopped
+# accepting the credentials. A detached retry loop is worse than no session, so
+# these reasons trigger a shutdown.
+FATAL_REASONS = frozenset(
+    {REASON_NO_DIALOG, REASON_TIMEOUT, REASON_CODE_REJECTED, REASON_NO_PROCESS}
+)
+
+# ... whereas these mean a human is about to send a code within seconds. Killing
+# the Gateway here would throw away a launch that is about to succeed.
+PENDING_REASONS = frozenset(
+    {REASON_NEEDS_CODE, REASON_DIALOG_STALE, REASON_LOST_RACE}
+)
 
 
 # Given the attempt number, return a code - or None to say "I cannot supply
@@ -362,6 +381,7 @@ def run_login(
     poll: float = 2.0,
     min_dialog_seconds: float = MIN_DIALOG_SECONDS,
     wait_for_fresh: bool = True,
+    stop_on_failure: bool = True,
     runner: Runner = run_command,
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], float] = time.monotonic,
@@ -380,6 +400,7 @@ def run_login(
     because the code has not been read off the phone yet.
     """
     display = settings.xvfb_display
+    launched = False
 
     def port_open() -> bool:
         return gateway.is_port_open(settings.host, settings.port)
@@ -399,6 +420,7 @@ def run_login(
                     0,
                     f"gateway-up.sh failed: {(result.stderr or result.stdout).strip()[-400:]}",
                 )
+            launched = True
     elif not gateway.gateway_process_running():
         return LoginResult(
             False,
@@ -406,6 +428,63 @@ def run_login(
             0,
             "no Gateway process to answer; start one with 'ib-agent gateway up'",
         )
+
+    outcome = _drive_login(
+        settings,
+        display=display,
+        code_provider=code_provider,
+        attempts=attempts,
+        dialog_timeout=dialog_timeout,
+        login_timeout=login_timeout,
+        settle_seconds=settle_seconds,
+        poll=poll,
+        min_dialog_seconds=min_dialog_seconds,
+        wait_for_fresh=wait_for_fresh,
+        runner=runner,
+        sleep=sleep,
+        now=now,
+        remaining=remaining,
+        port_open=port_open,
+    )
+
+    # A Gateway we started and could not log in must not be left behind: IBC
+    # retries for as long as it lives, and IBKR answers a long retry loop by
+    # refusing the credentials outright. Only reasons where no code is coming
+    # count - if a human is about to send one, the process is still useful.
+    if launched and stop_on_failure and outcome.reason in FATAL_REASONS:
+        gateway.stop()
+        return replace(
+            outcome,
+            gateway_stopped=True,
+            detail=f"{outcome.detail}; stopped the Gateway rather than leave it "
+            "retrying (IBKR locks a username that retries too long)",
+        )
+    return outcome
+
+
+def _drive_login(
+    settings: Settings,
+    *,
+    display: str,
+    code_provider: CodeProvider,
+    attempts: int,
+    dialog_timeout: float,
+    login_timeout: float,
+    settle_seconds: float,
+    poll: float,
+    min_dialog_seconds: float,
+    wait_for_fresh: bool,
+    runner: Runner,
+    sleep: Callable[[float], None],
+    now: Callable[[], float],
+    remaining: Callable[[], float | None],
+    port_open: Callable[[], bool],
+) -> LoginResult:
+    """Answer prompts until the port opens, the codes run out, or time does.
+
+    Split from `run_login` so that the shutdown policy has exactly one place to
+    inspect the outcome, rather than being repeated at every return.
+    """
 
     def fresh_dialog() -> Dialog | None:
         """A dialog worth typing into: present, and not about to be closed."""

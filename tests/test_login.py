@@ -84,16 +84,25 @@ def no_waiting(monkeypatch):
 
 
 def stub_gateway(monkeypatch, *, ports: list[bool], process: bool = True, launch_rc: int = 0):
-    """Program the port probe: one boolean per call, last value repeating."""
-    state = {"i": 0}
+    """Program the port probe: one boolean per call, last value repeating.
+
+    Returns a dict that also records whether `gateway.stop` was called, which is
+    how the shutdown policy is asserted.
+    """
+    state = {"i": 0, "stopped": 0}
 
     def is_port_open(host, port, timeout=2.0):
         value = ports[min(state["i"], len(ports) - 1)]
         state["i"] += 1
         return value
 
+    def stop():
+        state["stopped"] += 1
+        return subprocess.CompletedProcess([], 0, "stopped", "")
+
     monkeypatch.setattr(gateway, "is_port_open", is_port_open)
     monkeypatch.setattr(gateway, "gateway_process_running", lambda: process)
+    monkeypatch.setattr(gateway, "stop", stop)
     monkeypatch.setattr(
         gateway,
         "launch",
@@ -398,6 +407,61 @@ def test_missing_xdotool_fails_before_launching_anything(
         run(isolated_settings, broken, lambda a: "123456", no_waiting)
 
 
+# --- not leaving a retry loop behind --------------------------------------
+#
+# On 2026-08-24 a Gateway launched three days earlier and left waiting for a code
+# that never came had made 536 login attempts, been throttled 267 times with
+# escalating backoff, and ended on "Unrecognized Username or Password": IBKR had
+# stopped accepting the credentials. IBC retries for as long as it lives, so an
+# abandoned launch is not harmless.
+
+
+def test_a_gateway_we_launched_is_stopped_when_no_code_is_coming(
+    isolated_settings, monkeypatch, no_waiting
+):
+    stub = stub_gateway(monkeypatch, ports=[False], process=False)
+    result = run(
+        isolated_settings, FakeX(), lambda a: pytest.fail("must not ask"), no_waiting,
+        dialog_timeout=5.0,
+    )
+    assert not result.ok and result.reason == login.REASON_NO_DIALOG
+    assert stub["stopped"] == 1, "an unusable Gateway must not be left retrying"
+    assert result.gateway_stopped is True
+    assert "locks a username" in result.detail
+
+
+def test_a_gateway_waiting_for_a_human_is_left_running(
+    isolated_settings, monkeypatch, no_waiting
+):
+    """A code arrives in seconds; killing the launch would waste it."""
+    stub = stub_gateway(monkeypatch, ports=[False], process=False)
+    result = run(isolated_settings, FakeX(dialogs=["7"]), lambda a: None, no_waiting)
+    assert result.reason == login.REASON_NEEDS_CODE
+    assert stub["stopped"] == 0
+    assert result.gateway_stopped is False
+
+
+def test_a_gateway_we_did_not_start_is_never_stopped(
+    isolated_settings, monkeypatch, no_waiting
+):
+    """`gateway code` borrows someone else's process; it must not kill it."""
+    stub = stub_gateway(monkeypatch, ports=[False], process=True)
+    result = run(
+        isolated_settings, FakeX(), lambda a: pytest.fail("must not ask"), no_waiting,
+        launch=False, dialog_timeout=5.0,
+    )
+    assert not result.ok and result.reason == login.REASON_NO_DIALOG
+    assert stub["stopped"] == 0
+
+
+def test_exhausted_codes_also_stop_the_gateway(isolated_settings, monkeypatch, no_waiting):
+    stub = stub_gateway(monkeypatch, ports=[False], process=False)
+    fake = FakeX(dialogs=["1", "2", "3", "4", "5", "6"])
+    result = run(isolated_settings, fake, lambda a: "123456", no_waiting, attempts=2)
+    assert result.reason == login.REASON_CODE_REJECTED
+    assert stub["stopped"] == 1
+
+
 # --- the CLI surface -------------------------------------------------------
 
 
@@ -505,9 +569,13 @@ def test_gateway_status_reports_the_dialog_clock(capsys, monkeypatch):
 
 def test_no_prompt_yields_the_2fa_exit_code(capsys, stub_login, monkeypatch):
     """Cron needs to learn "a human is required" without blocking on stdin."""
-    rc, out, _ = cli_run(capsys, ["gateway", "up", "--no-prompt", "--json"])
+    rc, out, err = cli_run(capsys, ["gateway", "up", "--no-prompt", "--json"])
     assert rc == EXIT_NEEDS_2FA
     assert json.loads(out)["reason"] == login.REASON_NEEDS_CODE
+    # The warning matters as much as the exit code: a Gateway left waiting keeps
+    # retrying, and IBKR locked the username after three days of that.
+    assert "keep retrying" in err and "gateway down" in err
+    assert json.loads(out), "stdout stays parseable; the warning goes to stderr"
 
 
 def test_a_malformed_code_is_a_usage_error(capsys, stub_login):
