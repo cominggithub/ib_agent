@@ -1,0 +1,26 @@
+[project]
+name = "ib-agent"
+version = "0.1.0"
+description = "Read-only IBKR portfolio sync over the TWS API, with unattended Gateway login"
+readme = "README.md"
+authors = [
+    { name = "misscoming", email = "misscoming@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "ib-async>=2.1.0",
+    "ibflex>=1.1",
+    "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+ib-agent = "ib_agent.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.13,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

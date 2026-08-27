@@ -1,0 +1,18 @@
+{
+  "_source": "option_harvester postgres, 2026-08-19: option_harvest_security_conids (the pin registry) for B/COIN/GDX/FXI/SMCI, option_harvest_securities.conid for DOW whose pin is no longer present.",
+  "_why": "These are the conid corrections OH maintains by hand because IB's /trsrv picks the wrong listing. docs/OH-INTEGRATION-PLAN.md phase 3 acceptance: `ib-agent resolve --from-positions` must reproduce them from ContractDetails.underConId, at which point the pin registry can go.",
+  "_confidence": {
+    "pinned": "asserted by OH as known-correct (source ib-option: taken from a held option's undConid, or manual)",
+    "mirrored": "conid on the security row without a surviving pin; treat a mismatch as a finding to investigate, not a hard failure"
+  },
+  "pinned": {
+    "B": 780709675,
+    "COIN": 481691285,
+    "GDX": 229726316,
+    "FXI": 31421120,
+    "SMCI": 731466419
+  },
+  "mirrored": {
+    "DOW": 356576040
+  }
+}

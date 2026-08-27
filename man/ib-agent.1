@@ -1,0 +1,623 @@
+.TH IB-AGENT 1 "2026-08-11" "ib_agent 0.1.0" "User Commands"
+.SH NAME
+ib-agent \- read-only Interactive Brokers portfolio sync and query CLI
+.SH SYNOPSIS
+.B ib-agent
+.I command
+.RI [ options ]
+.PP
+.B ib-agent
+.BR status | sync | positions | expiries | underlyings | show | history | watch
+.br
+.BR watchlist | instruments | resolve | chain | greeks | orders | executions | gateway
+.SH DESCRIPTION
+.B ib-agent
+reads an Interactive Brokers account over the TWS API and stores snapshots in
+SQLite. It is the single sanctioned entry point for IBKR data on this machine:
+other projects call this command instead of talking to IBKR themselves, so that
+credentials, the Gateway session and the read-only guarantee live in one place.
+.PP
+Reads require no login and no manual approval. IBC keeps one IB Gateway logged
+in in the background and every read is a local socket connection to it. If the
+Gateway is not running, commands that need it fail rather than prompting.
+.PP
+Every data command accepts
+.BR \-\-json ,
+which is the stable machine interface. Human table output is for terminals only
+and its layout may change; the JSON payloads are the contract.
+.SH SAFETY
+The API session cannot place, change or cancel orders. Four independent gates
+enforce this:
+.RS 2
+.IP \(bu 2
+.I ReadOnlyApi=yes
+in
+.IR ~/ibc/config.ini
+\(em the Gateway itself rejects order messages on the API socket.
+.IP \(bu 2
+.I IB_READONLY=true
+\(em the client library refuses order calls.
+.IP \(bu 2
+no order code exists in the package.
+.IP \(bu 2
+IBKR user rights withhold Funding and Account Settings from the login the
+Gateway uses.
+.RE
+.PP
+No IBKR username or password is stored in this project. They are known only to
+IBC, in
+.IR ~/ibc/config.ini .
+.SH COMMANDS
+.TP
+.B status
+Report whether the Gateway process is running and the API port accepts
+connections. Accepts
+.BR \-\-json .
+This is the cheapest health check and needs no IB session.
+.TP
+.B sync \fR[\fB\-\-quiet\fR]
+Fetch a full snapshot (positions, account values, new instrument
+classifications) and store it in SQLite plus a JSON copy under
+.IR data/snapshots/ .
+.B \-\-quiet
+suppresses the table. Accepts
+.BR \-\-json .
+.TP
+.B positions\fR, \fBpos
+List positions with filters, grouping and totals. Reads live from the Gateway by
+default.
+.RS
+.TP
+.B \-\-stored
+Use the last stored snapshot; does not contact IBKR. Instant.
+.TP
+.B \-\-save
+Persist the freshly fetched snapshot.
+.TP
+.BI \-g " KEY" "\fR, \fB\-\-group-by " KEY
+Group rows and subtotal each group:
+.IR expiry ,
+.IR right ,
+.IR underlying ,
+.IR sec_type ,
+.IR asset_class ,
+.IR account ,
+.IR side ,
+.IR none
+(default).
+.TP
+.BI \-s " KEY" "\fR, \fB\-\-sort " KEY
+Sort by
+.IR symbol " (default), " expiry ", " dte ", " strike ", " quantity ", " value ", " pnl ", " underlying .
+.TP
+.B \-\-reverse
+Reverse the sort, e.g. worst P&L first.
+.TP
+.BI \-\-limit " N"
+Show at most N rows.
+.TP
+.B \-\-totals-only
+Omit rows, keep totals.
+.RE
+.TP
+.B expiries
+Option exposure grouped by expiry: contract count and value per expiry. Accepts
+all filters and
+.BR \-\-stored / \-\-save .
+.TP
+.B underlyings
+Exposure grouped by underlying symbol. Same options as
+.BR expiries .
+.TP
+.B show
+Print the most recent stored snapshot. Never contacts IBKR. Exits non-zero if
+nothing is stored yet.
+.TP
+.B history \fR[\fB\-\-limit \fIN\fR]
+List stored snapshots with net liquidation, newest first. Default 20.
+.TP
+.B watch \fR[\fB\-\-interval \fISECONDS\fR] [\fB\-\-quiet\fR]
+Unattended sync loop; default interval 900 seconds. Intended to run as the
+single background writer so that readers can use
+.B \-\-stored
+and pay no IB round trip.
+.TP
+.B watchlist\fR, \fBwl \fIadd\fR|\fIremove\fR|\fIlist\fR|\fIquotes\fR [\fISYMBOL\fR...]
+Manage a locally stored watchlist and quote it. This watchlist lives in this
+project's database; it is not an IBKR account watchlist and writing to it cannot
+affect the account.
+.B quotes
+with symbols quotes those symbols ad hoc and ignores the stored list.
+Options:
+.BR \-\-sec-type " (STK, IND, CASH, FUT, CRYPTO), " \-\-exchange ", " \-\-currency ", " \-\-note .
+.TP
+.B instruments
+Print cached underlying reference data (asset class from IB's
+.IR stockType :
+ETF, COMMON, ADR; long name, industry, category). Populated as a side effect of
+.BR sync ,
+one lookup per new underlying.
+.TP
+.B resolve \fR[\fISPEC\fR...] [\fB\-\-from-positions\fR] [\fB\-\-options\fR] [\fB\-\-stored\fR]
+Resolve contracts to IB contract ids. A
+.I SPEC
+is a bare conid
+.RI ( 12345 ),
+a symbol
+.RI ( GDX ),
+a symbol with sec type
+.RI ( GDX:STK )
+or an option
+.RI ( \(dqGDX\ 2026-09-18\ P\ 45\(dq ).
+With
+.BR \-\-from-positions ,
+resolve what is held instead, which reports each option's
+.B underlying_con_id
+directly from IB rather than inferring it from a symbol. Add
+.B \-\-options
+to skip equity positions and
+.B \-\-stored
+to take the position list from the last snapshot. One unresolvable spec is
+reported in its own row with
+.BR error ;
+the rest still resolve.
+.TP
+.B chain \fISYMBOL\fR [\fB\-e \fIPREFIX\fR] [\fB\-\-strike-min \fIN\fR] [\fB\-\-strike-max \fIN\fR] [\fB\-\-exchange \fIEXCH\fR]
+Option expirations and strikes for one underlying, from
+.BR reqSecDefOptParams .
+IB answers once per exchange and trading class;
+.B \-\-exchange
+keeps one (usually SMART).
+.B \-e
+keeps expirations with a prefix
+.RI ( 2026-09 ),
+and the strike bounds narrow the strike list. Filtering happens after the
+fetch, so the table and
+.B \-\-json
+always agree.
+.TP
+.B greeks \fR[\fISPEC\fR...] [filters] [\fB\-\-stored\fR]
+Model greeks \(em implied volatility, delta, gamma, theta, vega \(em plus the option
+and underlying price IB modelled them at. With no arguments, prices every held
+option and totals the book; all position filters apply. With specs, prices those
+contracts instead. Each row carries
+.B position_delta
+(delta times size times multiplier) and
+.BR source ,
+which names the greek set IB actually returned
+.RI ( model ", " last ", " bid ", " ask ).
+Contracts with no option market data are still listed, with
+.B error
+set and greeks null, so a gap is visible rather than silently absent. Exits
+.B 4
+when nothing could be priced.
+.TP
+.B orders \fR[\fB\-\-all\fR]
+Working orders, read-only: this asks IB what exists and can neither place,
+modify nor cancel anything. By default only IB's active statuses
+.RI ( ApiPending ", " PendingSubmit ", " PreSubmitted ", " Submitted ", " PendingCancel );
+.B \-\-all
+also lists orders IB still reports as filled or cancelled. Orders placed
+elsewhere \(em IBKR Mobile, for instance \(em belong to another client id and are
+relayed only when
+.B OverrideTwsMasterClientID
+is set in
+.IR ~/ibc/config.ini ,
+so an empty list is not proof that nothing is working. The JSON payload repeats
+that caveat in
+.BR master_client_id_hint .
+.TP
+.B executions\fR, \fBfills \fR[\fB\-\-symbol \fISYM\fR] [\fB\-\-sec-type \fITYPE\fR] [\fB\-\-side \fIBOT\fR|\fISLD\fR]
+Today's fills with commission and realized P&L, plus a signed
+.B proceeds
+per fill (negative when buying). IB's
+.B reqExecutions
+covers the current trading day only, whatever filter is passed, which the
+payload states as
+.BR "window: today" .
+Older history needs the Flex Web Service
+.RB ( IB_FLEX_QUERY_ID ).
+.TP
+.B gateway \fIup\fR|\fIcode\fR|\fIstatus\fR|\fIdown\fR
+Start or stop the headless Gateway via IBC, and complete its two-factor login.
+.B up
+starts Xvfb and the Gateway, waits for IBKR's
+.I Second Factor Authentication
+dialog, asks for a 6-digit Mobile Authenticator code at the moment it is needed,
+types it on the headless display and waits for the API port. The code is
+requested late on purpose: it expires in about 30 seconds, so it cannot be
+collected before the dialog exists.
+.B code
+.I NNNNNN
+submits a code to a login that is already waiting and never starts a second
+Gateway \(em this is how a session dropped by IBKR's weekly server reset is
+refreshed.
+.B status
+is a synonym for
+.BR status .
+.RS
+.TP
+.BI \-\-code " NNNNNN"
+Submit this code instead of prompting. Only sound when a dialog is already up.
+.TP
+.B \-\-no\-prompt
+Never read stdin; exit
+.B 5
+if a code is required. For cron and for agents that must ask a human out of band.
+.TP
+.BI \-\-attempts " N"
+How many codes to try before giving up (default 3). A code refused by IBKR is
+retried with a fresh one.
+.TP
+.BI \-\-wait " SECONDS"
+How long to wait for the dialog or the port (default 120).
+.RE
+.PP
+One code per session, not per read: once the port is open, every later query is a
+local socket connect needing no human. See
+.B docs/GATEWAY-LOGIN.md
+for failure modes and debugging.
+.SH FILTERS
+Accepted by
+.BR positions ,
+.B expiries
+and
+.BR underlyings .
+All filters are AND-ed; all list-valued filters take comma-separated values.
+.TP
+.BI \-t " LIST" "\fR, \fB\-\-type " LIST
+Security types:
+.IR stock ", " option ", " fut ", " cash ...
+.TP
+.BI \-r " LIST" "\fR, \fB\-\-right " LIST
+Option right:
+.IR put ", " call .
+.TP
+.BI \-u " LIST" "\fR, \fB\-\-underlying " LIST
+Underlying symbols.
+.TP
+.BI \-a " LIST" "\fR, \fB\-\-asset " LIST
+Asset class of the underlying:
+.IR etf ", " common ", " adr .
+.TP
+.BI \-e " LIST" "\fR, \fB\-\-expiry " LIST
+Expiry prefix:
+.IR 2026-09 ", " 202609 ", " 20260904 .
+.TP
+.BI \-\-expiry-from " DATE" "\fR, \fB\-\-expiry-to " DATE
+ISO date range on expiry.
+.TP
+.BI \-\-dte-min " N" "\fR, \fB\-\-dte-max " N
+Days to expiry bounds.
+.TP
+.BI \-\-side " long" |
+.I short
+Long or short positions.
+.TP
+.B \-\-options\fR, \fB\-\-equities
+Shorthand type filters.
+.TP
+.BI \-\-contains " TEXT"
+Substring match on the IB local symbol.
+.TP
+.BI \-\-account " LIST"
+Restrict to account ids.
+.SH JSON OUTPUT
+With
+.BR \-\-json ,
+data commands print a single JSON
+.I object
+on standard output and nothing else; diagnostics go to standard error. Never a
+bare array: an array has nowhere to carry the schema version, so a consumer
+could not tell which shape it is parsing. Common keys:
+.TP
+.B schema
+Integer contract version, currently 1. Fields are added without a bump;
+renaming or removing one bumps it. Refuse a version you do not know.
+.TP
+.B source
+.I live
+when fetched from the Gateway,
+.I snapshot
+when read from storage.
+.TP
+.B as_of
+ISO 8601 timestamp of the data, not of the invocation. Consumers must treat this
+as the freshness signal and refuse stale data themselves.
+.TP
+.B accounts\fR, \fBfilters\fR, \fBtotals
+Accounts covered, the filters that were applied, and aggregate figures.
+.TP
+.B positions
+Flat list of position objects, when not grouping.
+.TP
+.B groups
+When grouping:
+.BR groups[].key ,
+.BR groups[].totals ,
+and
+.B groups[].positions
+unless
+.B \-\-totals-only
+was given.
+.PP
+List-shaped commands wrap their rows and add a count:
+.B history
+returns
+.BR snapshots ,
+.B instruments
+returns
+.BR instruments ,
+.B watchlist list
+returns
+.BR watchlist ,
+.B resolve
+returns
+.B contracts
+(plus
+.B resolved
+and
+.B failed
+counts),
+.B chain
+returns
+.B chains
+with
+.B expirations
+and
+.B strikes
+per exchange,
+.B greeks
+returns
+.B greeks
+with a
+.B totals
+object holding the book's delta, gamma, theta and vega,
+.B orders
+returns
+.BR orders ,
+and
+.B executions
+returns
+.B executions
+with
+.BR "window: today" .
+.PP
+Quantities are negative for short positions. A short option position therefore
+has negative
+.BR market_value ,
+and positive
+.B unrealized_pnl
+means the short option has lost value, which is a gain for the seller.
+.SH ENVIRONMENT
+Read from the process environment and from
+.I .env
+in the project root.
+.TP
+.B IB_HOST
+Gateway host. Default
+.IR 127.0.0.1 .
+.TP
+.B IB_PORT
+API port. Default
+.IR 4001 .
+4002 and 7497 are paper ports and select paper mode.
+.TP
+.B IB_CLIENT_ID
+TWS API client id. Default
+.IR 17 .
+Concurrent invocations sharing one client id collide on the Gateway; give
+long-running processes a distinct id.
+.TP
+.B IB_ACCOUNT
+Restrict every read to one account id. Empty means all managed accounts.
+.TP
+.B IB_READONLY
+Default
+.IR true .
+Keep it true.
+.TP
+.B IB_CONNECT_TIMEOUT
+Seconds to wait for the Gateway. Default
+.IR 20 .
+.TP
+.B IB_AUTO_START_GATEWAY
+Whether commands may start the Gateway themselves. Default
+.IR true .
+.TP
+.B IB_MARKET_DATA_TYPE
+1 live, 2 frozen, 3 delayed, 4 delayed-frozen. Default
+.IR 3 ,
+which returns real-time data for subscribed products and free delayed data
+otherwise, so a quote never fails for lack of a subscription.
+.TP
+.B IB_DATA_DIR\fR, \fBIB_DB_PATH
+Snapshot and database locations. Default
+.I data/
+and
+.I data/portfolio.sqlite3
+under the project root.
+.TP
+.B IB_FLEX_TOKEN\fR, \fBIB_FLEX_QUERY_ID
+Flex Web Service credentials, for statement history the TWS API does not expose.
+.SH EXIT STATUS
+The code says why a command failed, so a caller can decide whether retrying
+could possibly help.
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Unexpected runtime failure.
+.TP
+.B 2
+Usage error from argument parsing.
+.TP
+.B 3
+Gateway unreachable or not logged in. Retrying later may succeed; retrying
+immediately will not.
+.TP
+.B 4
+No data: nothing stored yet, or an empty watchlist. Retrying changes nothing
+until something syncs. Commands that can still emit a well-formed but empty
+payload do so before exiting 4.
+.TP
+.B 5
+A login is waiting for a two-factor code that only the human can supply. Distinct
+from 3 on purpose: the Gateway is starting correctly, so a scheduler should ask a
+person rather than back off and retry. Answer with
+.B gateway code
+.IR NNNNNN .
+.TP
+.B 130
+Interrupted.
+.SH FILES
+.TP
+.I data/portfolio.sqlite3
+Snapshots, positions, account values, instruments, watchlist.
+.TP
+.I data/snapshots/portfolio-*.json
+Human-readable copy of each snapshot.
+.TP
+.I .env
+Local settings; see ENVIRONMENT.
+.TP
+.I ~/ibc/config.ini
+IBC configuration, including the IBKR credentials and
+.IR ReadOnlyApi .
+Not read by this program.
+.SH EXAMPLES
+.PP
+Check the Gateway before doing anything else:
+.PP
+.RS 4
+.EX
+ib-agent status --json
+.EE
+.RE
+.PP
+The option book by expiry, with a subtotal per expiry:
+.PP
+.RS 4
+.EX
+ib-agent positions --options --group-by expiry
+.EE
+.RE
+.PP
+Short puts on ETF underlyings expiring within a month, nearest first:
+.PP
+.RS 4
+.EX
+ib-agent positions --right put --asset etf --dte-max 30 --sort dte
+.EE
+.RE
+.PP
+Assignment risk review \(em everything expiring within two weeks:
+.PP
+.RS 4
+.EX
+ib-agent positions --dte-max 14 --sort dte --json
+.EE
+.RE
+.PP
+Worst unrealized P&L first:
+.PP
+.RS 4
+.EX
+ib-agent positions --sort pnl --reverse --limit 10
+.EE
+.RE
+.PP
+Book-level greek exposure, and the delta of every short put:
+.PP
+.RS 4
+.EX
+ib-agent greeks --json | jq .totals
+ib-agent greeks --right put --side short
+.EE
+.RE
+.PP
+Underlying conid for every held option, which is what a consumer keys on:
+.PP
+.RS 4
+.EX
+ib-agent resolve --from-positions --options --json \e
+  | jq '.contracts[] | {symbol, con_id, underlying_con_id}'
+.EE
+.RE
+.PP
+September strikes near the money on one underlying:
+.PP
+.RS 4
+.EX
+ib-agent chain GDX -e 2026-09 --strike-min 40 --strike-max 55 --exchange SMART
+.EE
+.RE
+.PP
+What is working right now, and what filled today:
+.PP
+.RS 4
+.EX
+ib-agent orders --json
+ib-agent executions --json | jq .totals
+.EE
+.RE
+.PP
+Read the stored snapshot without touching IBKR, for a UI request path:
+.PP
+.RS 4
+.EX
+ib-agent positions --stored --json
+.EE
+.RE
+.PP
+Quote symbols that are not on the stored watchlist:
+.PP
+.RS 4
+.EX
+ib-agent watchlist quotes TSM ASML --json
+.EE
+.RE
+.PP
+Filter grouped JSON with jq:
+.PP
+.RS 4
+.EX
+ib-agent expiries --json | jq '.groups[] | select(.count > 10)'
+.EE
+.RE
+.SH NOTES FOR OTHER PROGRAMS
+.IP \(bu 2
+Prefer
+.B \-\-stored
+in a request path. A live fetch costs roughly three seconds because it opens a
+fresh Gateway connection; the stored read costs nothing and is refreshed by
+.B watch
+in the background.
+.IP \(bu 2
+Always pass
+.BR \-\-json ,
+parse standard output only, and branch on the exit status rather than on text.
+.IP \(bu 2
+Check
+.B as_of
+and reject data older than your tolerance instead of assuming freshness.
+.IP \(bu 2
+Do not read
+.I data/portfolio.sqlite3
+directly. The schema migrates; the JSON payloads are the supported interface.
+.IP \(bu 2
+Do not call the Gateway or the IBKR Client Portal directly from another project.
+Route it through this command so the read-only guarantee and the audit trail
+hold.
+.SH SEE ALSO
+Project documentation:
+.IR README.md ,
+.IR docs/SETUP.md
+(authentication, 2FA, cron),
+.IR docs/ROADMAP.md
+(second login, order layer),
+.IR docs/OH-INTEGRATION-PLAN.md
+(interface for other projects).
+.SH AUTHOR
+misscoming <misscoming@gmail.com>
