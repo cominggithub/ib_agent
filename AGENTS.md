@@ -70,6 +70,8 @@ Notes:
 
 ## Working on this project
 
+- Start a fresh session by reading `docs/NEXT-SESSION.md`: current state, the one
+  blocker, next steps in order, and the observations worth not re-deriving.
 - Tests: `uv run pytest`. Keep them offline — no test may need a live Gateway.
   The live acceptance checks live in `tests/test_live.py` and skip unless
   `IB_LIVE_TESTS=1` and the port answers: `IB_LIVE_TESTS=1 uv run pytest
