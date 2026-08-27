@@ -61,9 +61,10 @@ Notes:
   username is the human's, for IBKR Mobile and Client Portal only, and IBKR
   allows one trading session per username. See `docs/ROADMAP.md`.
 - `agent-user`, `human-user` and `U1234567` are placeholders throughout this
-  repository. The real username, password and account id live only in
-  `~/ibc/config.ini` and `.env`, neither of which is tracked. Keep it that way:
-  do not paste real ids into docs, tests or commit messages.
+  repository, which is public. The real username, password and account id live
+  only in `~/ibc/config.ini`, `.env` and `.secrets/`, none of them tracked.
+  Never paste a real id into docs, tests or commit messages; a pre-commit hook
+  refuses it (`./scripts/install-hooks.sh`). See `docs/SECRETS.md`.
 - Money figures come from IB's account-update stream, delayed data outside
   market hours.
 

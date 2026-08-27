@@ -156,6 +156,7 @@ src/ib_agent/store.py      sqlite + json persistence, migrations
 src/ib_agent/cli.py        argparse adapter over api.py
 scripts/gateway-up.sh      idempotent headless Gateway start
 scripts/install-cli.sh     install CLI wrapper + man page + Kiro skill
+scripts/install-hooks.sh   pre-commit secret scan (see docs/SECRETS.md)
 man/ib-agent.1             full CLI manual (`man ib-agent`)
 .kiro/skills/ib-agent/     skill so Kiro drives the CLI instead of guessing
 tests/                     run with `uv run pytest`

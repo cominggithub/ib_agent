@@ -12,6 +12,11 @@ wheels/
 # Secrets and local config
 .env
 
+# Real identifiers, never tracked. Tracked files use placeholders
+# (agent-user, human-user, U1234567); .secrets/ maps them to the real
+# values and feeds the pre-commit scanner. See docs/SECRETS.md.
+.secrets/
+
 # Local state
 data/
 logs/
